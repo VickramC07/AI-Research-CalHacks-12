@@ -1,5 +1,5 @@
 """
-ScholarForge: Research Gap Discovery
+RAGe!: Research Gap Discovery
 A Streamlit app for identifying limitations and future directions in research papers.
 """
 
@@ -107,17 +107,16 @@ def _mock_response(topic: str, error: str = None) -> Dict[str, Any]:
 
 def render_summary(summary: str):
     """Render the research gap summary section."""
-    st.markdown("### 🔍 Research Gap Summary")
+    st.markdown("<h3 style='text-align: center;'>Research Gap Summary</h3>", unsafe_allow_html=True)
     st.info(summary)
 
 
 def render_limitations(limitations: list):
     """Render common limitations as a formatted table."""
-    st.markdown("### ⚠️ Common Limitations")
+    st.markdown("<h3 style='text-align: center;'>Common Limitations</h3>", unsafe_allow_html=True)
 
     # Convert to DataFrame for better display
     df = pd.DataFrame({
-        "ID": [f"L{i+1}" for i in range(len(limitations))],
         "Limitation": limitations
     })
 
@@ -127,44 +126,65 @@ def render_limitations(limitations: list):
 
 def render_future_directions(directions: list):
     """Render future directions as styled cards."""
-    st.markdown("### 🚀 Future Directions")
+    st.markdown("<h3 style='text-align: center;'>Future Directions</h3>", unsafe_allow_html=True)
 
     # Create columns for card layout
     for idx, direction in enumerate(directions, 1):
         with st.container():
             st.markdown(f"""
             <div style="
-                padding: 15px;
-                border-left: 4px solid #4CAF50;
-                background-color: rgba(76, 175, 80, 0.1);
-                margin-bottom: 10px;
-                border-radius: 4px;
-            ">
-                <strong>Direction {idx}:</strong> {direction}
+                padding: 22px;
+                background-color: rgba(45, 27, 105, 0.5);
+                margin-bottom: 18px;
+                border-radius: 12px;
+                color: white;
+                border: 3px solid #a855f7;
+                transition: all 0.3s ease;
+            "
+            onmouseover="this.style.boxShadow='0 6px 20px rgba(168, 85, 247, 0.4)';"
+            onmouseout="this.style.boxShadow='';"
+            >
+                <strong style='color: white; font-size: 19px;'>Direction {idx}:</strong> {direction}
             </div>
             """, unsafe_allow_html=True)
 
 
 def render_keyword_chart(keyword_data: list):
     """Render keyword frequency visualization using Altair."""
-    st.markdown("### 📈 Keyword Trend Analysis")
+    st.markdown("<h3 style='text-align: center;'>Keyword Trend Analysis</h3>", unsafe_allow_html=True)
 
     # Convert to DataFrame
     df = pd.DataFrame(keyword_data)
 
-    # Create Altair chart
-    chart = alt.Chart(df).mark_bar(color='#4CAF50').encode(
+    # Create Altair chart with purple theme and white text
+    chart = alt.Chart(df).mark_bar(
+        color='#a855f7',
+        cornerRadiusTopLeft=6,
+        cornerRadiusTopRight=6,
+        opacity=0.9
+    ).encode(
         x=alt.X('keyword:N', title='Keyword', sort='-y'),
         y=alt.Y('frequency:Q', title='Frequency in Future Work Discussions'),
         tooltip=['keyword', 'frequency']
     ).properties(
         title='Keyword Frequency in Future Work Discussions',
-        height=300
+        height=380
     ).configure_axis(
-        labelFontSize=12,
-        titleFontSize=14
+        labelFontSize=13,
+        titleFontSize=15,
+        labelColor='white',
+        titleColor='white',
+        gridColor='rgba(168, 85, 247, 0.15)',
+        domainColor='rgba(168, 85, 247, 0.4)'
     ).configure_title(
-        fontSize=16
+        fontSize=19,
+        color='white',
+        fontWeight=600
+    ).configure_view(
+        strokeWidth=0,
+        fill='rgba(45, 27, 105, 0.3)'
+    ).configure(
+        background='transparent'
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -248,7 +268,7 @@ def render_topic_distribution(papers: List[Dict[str, Any]]):
     if not papers:
         return
 
-    st.markdown("### 🧠 Research Topics Distribution")
+    st.markdown("<h3 style='text-align: center;'>Research Topics Distribution</h3>", unsafe_allow_html=True)
 
     with st.spinner("Analyzing paper topics with AI..."):
         # Cluster papers by topic
@@ -266,14 +286,25 @@ def render_topic_distribution(papers: List[Dict[str, Any]]):
         total = df['count'].sum()
         df['percentage'] = (df['count'] / total * 100).round(1)
 
-        # Create pie chart
-        chart = alt.Chart(df).mark_arc().encode(
+        # Create pie chart with purple/pink/blue theme
+        chart = alt.Chart(df).mark_arc(
+            stroke='rgba(168, 85, 247, 0.3)',
+            strokeWidth=2,
+            innerRadius=20
+        ).encode(
             theta=alt.Theta(field="count", type="quantitative"),
             color=alt.Color(
                 field="topic",
                 type="nominal",
-                scale=alt.Scale(scheme='category20'),
-                legend=alt.Legend(title="Topic")
+                scale=alt.Scale(range=['#a855f7', '#7c3aed', '#ec4899', '#3b82f6', '#9333ea', '#d946ef']),
+                legend=alt.Legend(
+                    title="Topic",
+                    titleColor='white',
+                    labelColor='white',
+                    titleFontSize=14,
+                    labelFontSize=12,
+                    titleFontWeight=600
+                )
             ),
             tooltip=[
                 alt.Tooltip('topic:N', title='Topic'),
@@ -281,14 +312,23 @@ def render_topic_distribution(papers: List[Dict[str, Any]]):
                 alt.Tooltip('percentage:Q', title='Percentage', format='.1f')
             ]
         ).properties(
-            height=300,
-            title='Papers Grouped by Research Topic (AI-Generated)'
+            height=380,
+            title='Papers Grouped by Research Topic'
+        ).configure_title(
+            fontSize=19,
+            color='white',
+            fontWeight=600
+        ).configure_view(
+            strokeWidth=0,
+            fill='transparent'
+        ).configure(
+            background='transparent'
         )
 
         st.altair_chart(chart, use_container_width=True)
 
         # Show topic details in expander
-        with st.expander("📋 View topic clusters"):
+        with st.expander("View topic clusters"):
             for topic, paper_titles in topic_clusters.items():
                 st.markdown(f"**{topic}** ({len(paper_titles)} papers)")
                 for title in paper_titles:
@@ -301,7 +341,7 @@ def render_year_distribution(papers: List[Dict[str, Any]]):
     if not papers:
         return
 
-    st.markdown("### 📅 Publication Year Distribution")
+    st.markdown("<h3 style='text-align: center;'>Publication Year Distribution</h3>", unsafe_allow_html=True)
 
     # Extract years and bucket them
     year_counts = {}
@@ -335,8 +375,13 @@ def render_year_distribution(papers: List[Dict[str, Any]]):
     )
     df = df.sort_values('year_sort', ascending=False)
 
-    # Create bar chart
-    chart = alt.Chart(df).mark_bar(color='#667eea').encode(
+    # Create bar chart with purple/blue gradient theme
+    chart = alt.Chart(df).mark_bar(
+        color='#3b82f6',
+        cornerRadiusTopLeft=6,
+        cornerRadiusTopRight=6,
+        opacity=0.9
+    ).encode(
         x=alt.X('year:N', title='Publication Year', sort=year_order),
         y=alt.Y('count:Q', title='Number of Papers'),
         tooltip=[
@@ -344,13 +389,24 @@ def render_year_distribution(papers: List[Dict[str, Any]]):
             alt.Tooltip('count:Q', title='Papers')
         ]
     ).properties(
-        height=300,
-        title='Papers by Publication Year (Past 10 Years)'
+        height=380,
+        title='Papers by Publication Year'
     ).configure_axis(
-        labelFontSize=11,
-        titleFontSize=14
+        labelFontSize=13,
+        titleFontSize=15,
+        labelColor='white',
+        titleColor='white',
+        gridColor='rgba(168, 85, 247, 0.15)',
+        domainColor='rgba(168, 85, 247, 0.4)'
     ).configure_title(
-        fontSize=16
+        fontSize=19,
+        color='white',
+        fontWeight=600
+    ).configure_view(
+        strokeWidth=0,
+        fill='rgba(45, 27, 105, 0.3)'
+    ).configure(
+        background='transparent'
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -358,31 +414,29 @@ def render_year_distribution(papers: List[Dict[str, Any]]):
 
 def render_papers_used(papers: List[Dict[str, Any]]):
     """Render the list of papers used in the analysis."""
-    st.markdown("### 📚 Papers Analyzed")
+    st.markdown("<h3 style='text-align: center;'>Papers Analyzed</h3>", unsafe_allow_html=True)
 
     if not papers:
         st.info("No papers were used in this analysis.")
         return
 
-    st.markdown(f"*Analysis based on {len(papers)} research paper(s)*")
-    st.markdown("")
+    # Single big expander containing all papers
+    with st.expander(f"View all {len(papers)} papers"):
+        for i, paper in enumerate(papers, 1):
+            # Create citation
+            authors = paper.get("authors", "Unknown Authors")
+            year = paper.get("year", "N/A")
+            title = paper.get("title", "Unknown Title")
+            venue = paper.get("venue", "")
+            field = paper.get("field", "")
+            relevance = paper.get("relevance_score", 0)
 
-    for i, paper in enumerate(papers, 1):
-        # Create citation
-        authors = paper.get("authors", "Unknown Authors")
-        year = paper.get("year", "N/A")
-        title = paper.get("title", "Unknown Title")
-        venue = paper.get("venue", "")
-        field = paper.get("field", "")
-        relevance = paper.get("relevance_score", 0)
+            # Format citation
+            citation = f"**[{i}]** {authors} ({year}). *{title}*"
+            if venue:
+                citation += f". {venue}"
 
-        # Format citation
-        citation = f"**[{i}]** {authors} ({year}). *{title}*"
-        if venue:
-            citation += f". {venue}"
-
-        # Display with expander
-        with st.expander(f"{title[:80]}..." if len(title) > 80 else f"{title}"):
+            # Display paper
             st.markdown(citation)
 
             # Metadata
@@ -399,6 +453,10 @@ def render_papers_used(papers: List[Dict[str, Any]]):
             if paper.get("content_preview"):
                 st.markdown("**Excerpt:**")
                 st.markdown(f"_{paper['content_preview']}_")
+
+            # Add separator between papers (except for the last one)
+            if i < len(papers):
+                st.markdown("<hr style='margin: 28px 0;'>", unsafe_allow_html=True)
 
 
 def render_results(data: Dict[str, Any]):
@@ -420,24 +478,24 @@ def render_results(data: Dict[str, Any]):
     papers = data.get("papers", [])
     if papers:
         render_papers_used(papers)
-        st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
 
     # Render analysis sections
     render_summary(data["summary"])
 
-    st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+    st.markdown("<hr>", unsafe_allow_html=True)
 
     if data.get("limitations"):
         render_limitations(data["limitations"])
-        st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
 
     if data.get("future_directions"):
         render_future_directions(data["future_directions"])
-        st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
 
     if data.get("keyword_trend"):
         render_keyword_chart(data["keyword_trend"])
-        st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
 
     # Render topic and year distributions
     if papers:
@@ -453,11 +511,11 @@ def render_results(data: Dict[str, Any]):
 # ============================================================================
 
 def render_chatbot():
-    """Render the Claude-powered research assistant chatbot."""
-    st.markdown("<hr style='margin: 40px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
-    st.markdown("### 🤖 Claude Research Assistant")
-    st.markdown("*Ask questions about papers, get recommendations, or explore research topics*")
-    st.markdown("*Claude can search the research database to answer your questions*")
+    """Render the RAGe! chatbot."""
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>RAGe! Chatbot</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-style: italic; color: #c7b5e8;'>Ask questions about papers, get recommendations, or explore research topics</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-style: italic; color: #c7b5e8;'>RAGe! can search the research database to answer your questions</p>", unsafe_allow_html=True)
 
     # Initialize chat history in session state
     if 'claude_chat_history' not in st.session_state:
@@ -506,6 +564,9 @@ def render_chatbot():
 
                         # Update conversation history
                         st.session_state.claude_chat_history = response.get("conversation_history", [])
+
+                        # Scroll to bottom after response (only on user interaction, not on initialization)
+
                     else:
                         error_msg = f"I apologize, but I encountered an error: {response.get('response', 'Unknown error')}"
                         st.error(error_msg)
@@ -513,58 +574,143 @@ def render_chatbot():
                         st.session_state.claude_chat_history.append({"role": "user", "content": prompt})
                         st.session_state.claude_chat_history.append({"role": "assistant", "content": error_msg})
 
+                        # Scroll to bottom after error
+
                 except Exception as e:
                     error_msg = f"Error: {str(e)}"
                     st.error(error_msg)
                     st.session_state.claude_chat_history.append({"role": "user", "content": prompt})
                     st.session_state.claude_chat_history.append({"role": "assistant", "content": error_msg})
 
+                    # Scroll to bottom after exception
+
+
 
 def apply_custom_styles():
     """Apply custom CSS styling to the app."""
     st.markdown("""
         <style>
-        /* Simple starry background */
+        /* Animated gradient background - dark blue to dark purple */
         .stApp {
-            background-color: #0e1117;
-            background-image:
-                radial-gradient(2px 2px at 20% 30%, white, transparent),
-                radial-gradient(2px 2px at 60% 70%, white, transparent),
-                radial-gradient(1px 1px at 50% 50%, white, transparent),
-                radial-gradient(1px 1px at 80% 10%, white, transparent),
-                radial-gradient(2px 2px at 90% 60%, white, transparent),
-                radial-gradient(1px 1px at 33% 80%, white, transparent),
-                radial-gradient(1px 1px at 15% 45%, white, transparent),
-                radial-gradient(1px 1px at 70% 20%, white, transparent),
-                radial-gradient(2px 2px at 40% 90%, white, transparent),
-                radial-gradient(1px 1px at 25% 60%, white, transparent);
-            background-size: 200% 200%;
-            animation: stars 200s linear infinite;
+            background: linear-gradient(135deg, #0a1128, #1a1b3d, #1e1b4e, #2d1b69, #1e1b4e, #1a1b3d, #0a1128);
+            background-size: 400% 400%;
+            animation: gradientShift 40s ease-in-out infinite;
         }
 
-        @keyframes stars {
-            0% { background-position: 0% 0%; }
-            100% { background-position: 100% 100%; }
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        /* Background decorative elements */
+        .stApp::before {
+            content: '';
+            position: fixed;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, rgba(168, 85, 247, 0.15) 0%, transparent 70%);
+            border-radius: 50%;
+            top: 10%;
+            left: 15%;
+            animation: float1 20s ease-in-out infinite;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .stApp::after {
+            content: '';
+            position: fixed;
+            width: 250px;
+            height: 250px;
+            background: radial-gradient(circle, rgba(124, 58, 237, 0.12) 0%, transparent 70%);
+            border-radius: 50%;
+            bottom: 15%;
+            right: 10%;
+            animation: float2 25s ease-in-out infinite;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        @keyframes float1 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(30px, -40px) scale(1.1); }
+            66% { transform: translate(-20px, 30px) scale(0.9); }
+        }
+
+        @keyframes float2 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(-40px, 30px) scale(1.15); }
+            66% { transform: translate(25px, -25px) scale(0.85); }
+        }
+
+        @keyframes float3 {
+            0%, 100% { transform: translate(0, 0); }
+            50% { transform: translate(-30px, 40px); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.2); }
         }
 
         /* Remove default padding */
         .main {
             background-color: transparent;
             padding-top: 0 !important;
-            padding-bottom: 120px;
+            padding-bottom: 0px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .main::before {
+            content: '';
+            position: fixed;
+            width: 200px;
+            height: 200px;
+            background: radial-gradient(circle, rgba(236, 72, 153, 0.1) 0%, transparent 70%);
+            border-radius: 50%;
+            top: 50%;
+            left: 5%;
+            animation: float3 30s ease-in-out infinite;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .main::after {
+            content: '';
+            position: fixed;
+            width: 180px;
+            height: 180px;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%);
+            border-radius: 50%;
+            top: 20%;
+            right: 20%;
+            animation: float1 22s ease-in-out infinite reverse;
+            z-index: 1;
+            pointer-events: none;
         }
 
         /* Page title at top */
         .page-title {
             text-align: center;
-            font-size: 32px;
+            font-size: 56px;
             font-weight: 700;
-            padding: 20px 0;
+            padding: 40px 0;
             margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            color: white;
+            letter-spacing: 4px;
+        }
+
+        /* Section titles */
+        h3 {
+            color: white !important;
+            font-weight: 600 !important;
+            padding: 25px 0 15px 0 !important;
+            font-size: 32px !important;
+            letter-spacing: 2px;
+            border-bottom: 3px solid #a855f7;
+            padding-bottom: 15px !important;
+            margin-bottom: 25px !important;
         }
 
         /* Container for centered layout */
@@ -572,7 +718,7 @@ def apply_custom_styles():
             display: flex;
             flex-direction: column;
             min-height: 100vh;
-            padding-bottom: 120px;
+            padding-bottom: 60px;
         }
 
         /* Spacer to push search to center */
@@ -586,34 +732,71 @@ def apply_custom_styles():
         /* Search box styling */
         .stTextInput > div > div > input {
             text-align: center;
-            font-size: 16px;
-            padding: 12px;
+            font-size: 18px;
+            padding: 18px;
+            background-color: rgba(45, 27, 105, 0.5);
+            border: 1px solid #a855f7;
+            color: white;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            outline: none !important;
         }
 
-        /* Fixed footer at bottom */
-        .fixed-footer {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background-color: #0e1117;
-            z-index: 1000;
-            text-align: center;
-            color: #666;
-            font-size: 12px;
-            padding: 20px;
-            border-top: 1px solid #333;
+        .stTextInput > div > div > input:focus {
+            border-color: #a855f7 !important;
+            font-size: 20px;
+            box-shadow: 0 0 25px rgba(168, 85, 247, 0.8) !important;
+            outline: none !important;
+        }
+
+        /* Remove any browser default focus styling */
+        .stTextInput > div > div > input:focus-visible {
+            outline: none !important;
+        }
+
+        .stTextInput > div > div > input::placeholder {
+            color: rgba(255, 255, 255, 0.3);
         }
 
         /* Info box styling */
         .stInfo {
-            background-color: rgba(100, 100, 255, 0.1);
-            border-left: 4px solid #667eea;
+            background-color: rgba(45, 27, 105, 0.5);
+            border: 3px solid #a855f7;
+            color: white;
+            padding: 22px;
+            border-radius: 12px;
+            transition: all 0.3s ease;
         }
 
         /* Table styling */
         .stTable {
-            background-color: #1a1a2e;
+            background-color: rgba(45, 27, 105, 0.5);
+            border: 3px solid #a855f7;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        table {
+            color: white !important;
+        }
+
+        thead tr th {
+            background-color: rgba(45, 27, 105, 0.7) !important;
+            color: white !important;
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            padding: 16px !important;
+            border-bottom: 2px solid #a855f7 !important;
+        }
+
+        tbody tr td {
+            padding: 16px !important;
+            border-bottom: 1px solid rgba(168, 85, 247, 0.3) !important;
+            transition: background-color 0.3s ease;
+        }
+
+        tbody tr:hover td {
+            background-color: rgba(168, 85, 247, 0.2) !important;
         }
 
         /* Results container */
@@ -623,10 +806,118 @@ def apply_custom_styles():
 
         /* Chat container */
         .stChatMessage {
-            background-color: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 10px;
-            margin: 10px 0;
+            background-color: rgba(45, 27, 105, 0.5);
+            border-radius: 16px;
+            padding: 22px;
+            margin: 18px 0;
+            border: 3px solid #a855f7;
+            transition: all 0.3s ease;
+        }
+
+        .stChatMessage:hover {
+            border-color: #a855f7;
+            box-shadow: 0 4px 20px rgba(168, 85, 247, 0.3);
+        }
+
+        /* General text color */
+        p, span, div {
+            color: white;
+            font-size: 16px;
+            line-height: 1.8;
+        }
+
+        /* Markdown text */
+        .stMarkdown {
+            color: white;
+        }
+
+        /* Expander styling */
+        .streamlit-expanderHeader {
+            background-color: rgba(45, 27, 105, 0.5);
+            border: 3px solid #a855f7;
+            color: white !important;
+            padding: 16px !important;
+            border-radius: 12px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .streamlit-expanderHeader:hover {
+            border-color: #a855f7;
+            background-color: rgba(45, 27, 105, 0.7);
+            box-shadow: 0 4px 15px rgba(168, 85, 247, 0.3);
+        }
+
+        /* Metric styling */
+        .stMetric {
+            background-color: rgba(45, 27, 105, 0.5);
+            padding: 18px;
+            border-radius: 12px;
+            border: 3px solid #a855f7;
+            transition: all 0.3s ease;
+        }
+
+        .stMetric:hover {
+            border-color: #a855f7;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(168, 85, 247, 0.3);
+        }
+
+        .stMetric label {
+            color: white !important;
+            font-size: 14px !important;
+            font-weight: 600 !important;
+        }
+
+        .stMetric .metric-value {
+            color: white !important;
+            font-size: 28px !important;
+        }
+
+        /* Horizontal rule styling - hide default rules */
+        hr {
+            display: none;
+        }
+
+        .stSpinner > div {
+            border-color: #a855f7 transparent transparent transparent !important;
+        }
+
+        /* Warning/error box styling */
+        .stWarning {
+            background-color: rgba(45, 27, 105, 0.5);
+            border: 3px solid #a855f7;
+            color: white;
+            padding: 22px;
+            border-radius: 12px;
+        }
+
+        /* Button styling */
+        .stButton > button {
+            background-color: rgba(45, 27, 105, 0.5);
+            color: white;
+            border: 3px solid #a855f7;
+            border-radius: 12px;
+            padding: 14px 28px;
+            font-weight: 600;
+            transition: all 0.4s ease;
+        }
+
+        .stButton > button:hover {
+            background-color: rgba(45, 27, 105, 0.7);
+            box-shadow: 0 8px 25px rgba(168, 85, 247, 0.5);
+        }
+
+        /* Column styling for charts */
+        [data-testid="column"] {
+            padding: 12px;
+        }
+
+        /* Chat input styling */
+        .stChatInputContainer {
+            background-color: rgba(45, 27, 105, 0.5);
+            border-top: 3px solid #a855f7;
+            padding: 18px;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -642,7 +933,7 @@ def main():
     # Page configuration
     st.set_page_config(
         layout="centered",
-        page_title="ScholarForge: Research Gap Discovery",
+        page_title="RAGe!: Research Gap Discovery",
         page_icon="🔬",
         initial_sidebar_state="collapsed"
     )
@@ -662,7 +953,7 @@ def main():
     has_results = st.session_state.search_performed and st.session_state.results is not None
 
     # Page title at top
-    st.markdown('<div class="page-title">ScholarForge</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-title">RAGe!</div>', unsafe_allow_html=True)
 
     # Search interface with conditional centering
     if not has_results:
@@ -672,7 +963,7 @@ def main():
         with col2:
             topic = st.text_input(
                 "Research Topic",
-                placeholder="Enter a research topic (e.g. 'quantum simulation', 'transformer interpretability')",
+                placeholder="Enter a research topic keywords",
                 label_visibility="collapsed",
                 key="search_input"
             )
@@ -683,7 +974,7 @@ def main():
         with col2:
             topic = st.text_input(
                 "Research Topic",
-                placeholder="Enter a research topic (e.g. 'quantum simulation', 'transformer interpretability')",
+                placeholder="Enter a research topic keywords",
                 label_visibility="collapsed",
                 key="search_input"
             )
@@ -719,12 +1010,6 @@ def main():
 
         # Chatbot section at bottom - ONLY AFTER SEARCH
         render_chatbot()
-
-    # Fixed footer at bottom
-    st.markdown(
-        '<div class="fixed-footer">Powered by Claude, Fetch.ai, Elastic, and Chroma.</div>',
-        unsafe_allow_html=True
-    )
 
 
 # ============================================================================
