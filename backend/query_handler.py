@@ -51,7 +51,7 @@ class QueryHandler:
     def query_research_gaps(
         self,
         topic: str,
-        n_results: int = 10,
+        n_results: int = 20,
         use_semantic: bool = True,
         use_keyword: bool = True,
         relevance_threshold: float = 0.7,
@@ -120,7 +120,7 @@ class QueryHandler:
 
             # Check if we have any relevant results OR if we need more to reach minimum
             total_found = len(semantic_results) + len(keyword_results)
-            min_required = max(5, n_results)  # At least 5 papers
+            min_required = max(10, n_results // 2)  # Be flexible - quality over quantity
 
             if total_found < min_required:
                 logger.warning(f"Found {total_found} papers locally, need at least {min_required}")
@@ -128,25 +128,43 @@ class QueryHandler:
                 # Try fetching from external sources if enabled
                 if self.fetch_from_arxiv:
                     needed = min_required - total_found
-                    total_fetched = 0
 
-                    # Try multiple sources in priority order, prioritizing recent papers
-                    sources = [
-                        ("arXiv", self._fetch_and_ingest_from_arxiv),
+                    # Balanced fetching strategy for diversity:
+                    # - 50% from arXiv (strong coverage)
+                    # - 50% distributed among other sources
+                    # - Guarantee at least 2-3 non-arXiv papers
+                    arxiv_quota = max(needed // 2, needed - 3)  # At least leave room for 3 non-arXiv
+                    other_quota = needed - arxiv_quota
+
+                    logger.info(f"Fetching {needed} papers: {arxiv_quota} from arXiv, {other_quota} from other sources")
+
+                    # Fetch from arXiv first (largest quota)
+                    arxiv_fetched = self._fetch_and_ingest_from_arxiv(topic, n_results=arxiv_quota)
+                    logger.info(f"Fetched {arxiv_fetched} papers from arXiv")
+
+                    # Distribute remaining among other sources (round-robin)
+                    other_sources = [
                         ("Semantic Scholar", self._fetch_and_ingest_from_semantic_scholar),
                         ("PubMed", self._fetch_and_ingest_from_pubmed),
                         ("Crossref", self._fetch_and_ingest_from_crossref)
                     ]
 
-                    for source_name, fetch_func in sources:
-                        if total_fetched >= needed:
-                            break
+                    remaining = needed - arxiv_fetched
+                    per_source = max(1, remaining // len(other_sources))
+                    total_other = 0
 
-                        remaining = needed - total_fetched
-                        logger.info(f"Attempting to fetch {remaining} papers from {source_name}...")
-                        fetched = fetch_func(topic, n_results=remaining)
-                        total_fetched += fetched
-                        logger.info(f"Fetched {fetched} papers from {source_name} (total: {total_fetched})")
+                    for source_name, fetch_func in other_sources:
+                        if remaining <= 0:
+                            break
+                        fetch_count = min(per_source, remaining)
+                        logger.info(f"Attempting to fetch {fetch_count} papers from {source_name}...")
+                        fetched = fetch_func(topic, n_results=fetch_count)
+                        total_other += fetched
+                        remaining -= fetched
+                        logger.info(f"Fetched {fetched} papers from {source_name}")
+
+                    total_fetched = arxiv_fetched + total_other
+                    logger.info(f"Total fetched: {total_fetched} papers ({arxiv_fetched} arXiv, {total_other} other sources)")
 
                     if total_fetched > 0:
                         logger.info(f"Fetched and ingested {total_fetched} papers from external sources. Re-searching...")
@@ -566,6 +584,15 @@ class QueryHandler:
         papers = []
         seen_titles = set()
 
+        # Helper function to normalize Elastic scores to 0-1 range
+        def normalize_elastic_score(score: float) -> float:
+            """Normalize Elastic score to 0-1 using asymptotic function."""
+            if score <= 0:
+                return 0.0
+            # Use function: score / (score + k) where k=10
+            # This asymptotically approaches 1.0 as score increases
+            return score / (score + 10.0)
+
         # Helper function to determine paper source
         def get_paper_source(metadata):
             venue = metadata.get("venue", "").lower()
@@ -590,7 +617,7 @@ class QueryHandler:
                 return "Other"
 
         # Process semantic results (process more to account for duplicates)
-        for result in semantic_results[:20]:
+        for result in semantic_results[:40]:
             metadata = result.get("metadata", {})
             title = metadata.get("title", "Unknown")
 
@@ -610,12 +637,12 @@ class QueryHandler:
                 seen_titles.add(title)
 
                 # Stop if we have enough papers
-                if len(papers) >= 10:
+                if len(papers) >= 20:
                     break
 
         # Process keyword results (only if we need more papers)
-        if len(papers) < 10:
-            for result in keyword_results[:20]:
+        if len(papers) < 20:
+            for result in keyword_results[:40]:
                 title = result.get("title", "Unknown")
 
                 if title not in seen_titles and title != "Unknown":
@@ -626,7 +653,7 @@ class QueryHandler:
                         "year": metadata.get("year", "N/A"),
                         "venue": metadata.get("venue", ""),
                         "field": metadata.get("field", ""),
-                        "relevance_score": result.get("score", 0) / 10.0,  # Normalize Elastic score
+                        "relevance_score": normalize_elastic_score(result.get("score", 0)),
                         "content_preview": result.get("content", "")[:300] + "...",
                         "source": get_paper_source(metadata),
                         "retrieval_method": "keyword"
@@ -634,7 +661,7 @@ class QueryHandler:
                     seen_titles.add(title)
 
                     # Stop if we have enough papers
-                    if len(papers) >= 10:
+                    if len(papers) >= 20:
                         break
 
         return papers

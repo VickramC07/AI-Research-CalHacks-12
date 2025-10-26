@@ -8,6 +8,7 @@ import pandas as pd
 import altair as alt
 from typing import Dict, Any, List
 import logging
+from datetime import datetime
 
 # Import backend modules
 from backend.query_handler import get_query_handler, QueryHandler
@@ -61,7 +62,7 @@ def query_research_gaps(topic: str) -> Dict[str, Any]:
         # Query through the backend
         result = backend.query_research_gaps(
             topic=topic,
-            n_results=10,
+            n_results=20,
             use_semantic=True,
             use_keyword=True
         )
@@ -169,49 +170,130 @@ def render_keyword_chart(keyword_data: list):
     st.altair_chart(chart, use_container_width=True)
 
 
-def render_source_distribution(papers: List[Dict[str, Any]]):
-    """Render pie chart showing distribution of paper sources."""
+def cluster_papers_by_topic(papers: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """Use Claude to cluster papers by topic/focus area."""
+    if not papers:
+        return {}
+
+    try:
+        import anthropic
+        from backend import config
+
+        # Use Opus model for better topic clustering
+        client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+
+        # Extract titles
+        titles = [paper.get("title", "Unknown") for paper in papers if paper.get("title") != "Unknown"]
+
+        if not titles:
+            return {}
+
+        # Create prompt for Claude
+        titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(titles)])
+
+        prompt = f"""Analyze these research paper titles and group them by their main topic/focus area.
+Similar topics should be grouped together. Return ONLY a JSON object (no markdown, no explanation) in this exact format:
+
+{{
+  "Topic Name 1": [1, 3, 5],
+  "Topic Name 2": [2, 4],
+  "Topic Name 3": [6, 7, 8]
+}}
+
+Where the numbers are the paper indices from the list below. Make topic names concise (2-4 words).
+If a paper doesn't fit with others, it can be in its own topic group or in "Other Topics".
+
+Papers:
+{titles_text}
+
+Return ONLY the JSON object:"""
+
+        response = client.messages.create(
+            model="claude-opus-4-1-20250805",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        # Extract response text
+        response_text = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                response_text += block.text
+
+        # Parse JSON (remove any markdown formatting)
+        import json
+        response_text = response_text.strip()
+        if response_text.startswith("```"):
+            # Remove markdown code blocks
+            lines = response_text.split("\n")
+            response_text = "\n".join([l for l in lines if not l.startswith("```")])
+
+        clusters = json.loads(response_text)
+
+        # Convert indices to titles
+        topic_papers = {}
+        for topic, indices in clusters.items():
+            topic_papers[topic] = [titles[i-1] for i in indices if 0 < i <= len(titles)]
+
+        return topic_papers
+
+    except Exception as e:
+        logger.error(f"Error clustering papers: {e}")
+        # Fallback to simple grouping
+        return {"All Papers": [p.get("title", "Unknown") for p in papers[:5]]}
+
+
+def render_topic_distribution(papers: List[Dict[str, Any]]):
+    """Render pie chart showing distribution of papers by AI-clustered topics."""
     if not papers:
         return
 
-    st.markdown("### 📊 Paper Sources Distribution")
+    st.markdown("### 🧠 Research Topics Distribution")
 
-    # Count sources
-    source_counts = {}
-    for paper in papers:
-        source = paper.get("source", "Other")
-        if not source or source == "":
-            source = "Other"
-        source_counts[source] = source_counts.get(source, 0) + 1
+    with st.spinner("Analyzing paper topics with AI..."):
+        # Cluster papers by topic
+        topic_clusters = cluster_papers_by_topic(papers)
 
-    # Convert to DataFrame and calculate percentages
-    source_data = [{"source": k, "count": v} for k, v in source_counts.items()]
-    df = pd.DataFrame(source_data)
+        if not topic_clusters:
+            st.info("Not enough papers to cluster by topic.")
+            return
 
-    # Calculate percentage
-    total = df['count'].sum()
-    df['percentage'] = (df['count'] / total * 100).round(1)
+        # Count papers per topic
+        topic_data = [{"topic": k, "count": len(v)} for k, v in topic_clusters.items()]
+        df = pd.DataFrame(topic_data)
 
-    # Create pie chart
-    chart = alt.Chart(df).mark_arc().encode(
-        theta=alt.Theta(field="count", type="quantitative"),
-        color=alt.Color(
-            field="source",
-            type="nominal",
-            scale=alt.Scale(scheme='category20'),
-            legend=alt.Legend(title="Source")
-        ),
-        tooltip=[
-            alt.Tooltip('source:N', title='Source'),
-            alt.Tooltip('count:Q', title='Papers'),
-            alt.Tooltip('percentage:Q', title='Percentage', format='.1f')
-        ]
-    ).properties(
-        height=300,
-        title='Distribution of Papers by Source'
-    )
+        # Calculate percentage
+        total = df['count'].sum()
+        df['percentage'] = (df['count'] / total * 100).round(1)
 
-    st.altair_chart(chart, use_container_width=True)
+        # Create pie chart
+        chart = alt.Chart(df).mark_arc().encode(
+            theta=alt.Theta(field="count", type="quantitative"),
+            color=alt.Color(
+                field="topic",
+                type="nominal",
+                scale=alt.Scale(scheme='category20'),
+                legend=alt.Legend(title="Topic")
+            ),
+            tooltip=[
+                alt.Tooltip('topic:N', title='Topic'),
+                alt.Tooltip('count:Q', title='Papers'),
+                alt.Tooltip('percentage:Q', title='Percentage', format='.1f')
+            ]
+        ).properties(
+            height=300,
+            title='Papers Grouped by Research Topic (AI-Generated)'
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+
+        # Show topic details in expander
+        with st.expander("📋 View topic clusters"):
+            for topic, paper_titles in topic_clusters.items():
+                st.markdown(f"**{topic}** ({len(paper_titles)} papers)")
+                for title in paper_titles:
+                    st.markdown(f"  - {title[:100]}{'...' if len(title) > 100 else ''}")
+                st.markdown("")
 
 
 def render_year_distribution(papers: List[Dict[str, Any]]):
@@ -223,7 +305,7 @@ def render_year_distribution(papers: List[Dict[str, Any]]):
 
     # Extract years and bucket them
     year_counts = {}
-    current_year = 2024
+    current_year = datetime.now().year
     for paper in papers:
         year = paper.get("year", 0)
 
@@ -300,7 +382,7 @@ def render_papers_used(papers: List[Dict[str, Any]]):
             citation += f". {venue}"
 
         # Display with expander
-        with st.expander(f"📄 {title[:80]}..." if len(title) > 80 else f"📄 {title}"):
+        with st.expander(f"{title[:80]}..." if len(title) > 80 else f"{title}"):
             st.markdown(citation)
 
             # Metadata
@@ -357,11 +439,11 @@ def render_results(data: Dict[str, Any]):
         render_keyword_chart(data["keyword_trend"])
         st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
 
-    # Render source and year distributions
+    # Render topic and year distributions
     if papers:
         col1, col2 = st.columns(2)
         with col1:
-            render_source_distribution(papers)
+            render_topic_distribution(papers)
         with col2:
             render_year_distribution(papers)
 
@@ -442,9 +524,32 @@ def apply_custom_styles():
     """Apply custom CSS styling to the app."""
     st.markdown("""
         <style>
+        /* Simple starry background */
+        .stApp {
+            background-color: #0e1117;
+            background-image:
+                radial-gradient(2px 2px at 20% 30%, white, transparent),
+                radial-gradient(2px 2px at 60% 70%, white, transparent),
+                radial-gradient(1px 1px at 50% 50%, white, transparent),
+                radial-gradient(1px 1px at 80% 10%, white, transparent),
+                radial-gradient(2px 2px at 90% 60%, white, transparent),
+                radial-gradient(1px 1px at 33% 80%, white, transparent),
+                radial-gradient(1px 1px at 15% 45%, white, transparent),
+                radial-gradient(1px 1px at 70% 20%, white, transparent),
+                radial-gradient(2px 2px at 40% 90%, white, transparent),
+                radial-gradient(1px 1px at 25% 60%, white, transparent);
+            background-size: 200% 200%;
+            animation: stars 200s linear infinite;
+        }
+
+        @keyframes stars {
+            0% { background-position: 0% 0%; }
+            100% { background-position: 100% 100%; }
+        }
+
         /* Remove default padding */
         .main {
-            background-color: #0e1117;
+            background-color: transparent;
             padding-top: 0 !important;
             padding-bottom: 120px;
         }
