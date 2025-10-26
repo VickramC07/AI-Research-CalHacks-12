@@ -1,0 +1,26 @@
+# Frontend
+streamlit>=1.28.0
+pandas>=2.0.0
+altair>=5.0.0
+
+# Elastic Search
+elasticsearch>=8.0.0
+
+# Chroma Vector Database
+chromadb>=0.4.0
+
+# Claude API
+anthropic>=0.18.0
+
+# arXiv API
+arxiv>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+
+# Optional: For local embeddings (if not using OpenAI)
+# sentence-transformers>=2.2.0
+
+# Optional: For Fetch.ai integration (future)
+# cosmpy>=0.9.0
+# uagents>=0.5.0
