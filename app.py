@@ -10,7 +10,8 @@ from typing import Dict, Any, List
 import logging
 
 # Import backend modules
-from backend.query_handler import get_query_handler
+from backend.query_handler import get_query_handler, QueryHandler
+from backend.claude_chatbot import get_claude_chatbot
 from backend import config
 
 # Configure logging
@@ -25,7 +26,10 @@ logger = logging.getLogger(__name__)
 def get_backend():
     """Initialize and cache the backend query handler."""
     try:
-        return get_query_handler()
+        # Initialize with recent paper prioritization (2020+)
+        # and minimum 5 papers guarantee
+        handler = QueryHandler(fetch_from_arxiv=True, min_year=2020)
+        return handler
     except Exception as e:
         logger.error(f"Failed to initialize backend: {e}")
         st.error(f"Backend initialization failed: {e}")
@@ -165,6 +169,111 @@ def render_keyword_chart(keyword_data: list):
     st.altair_chart(chart, use_container_width=True)
 
 
+def render_source_distribution(papers: List[Dict[str, Any]]):
+    """Render pie chart showing distribution of paper sources."""
+    if not papers:
+        return
+
+    st.markdown("### 📊 Paper Sources Distribution")
+
+    # Count sources
+    source_counts = {}
+    for paper in papers:
+        source = paper.get("source", "Other")
+        if not source or source == "":
+            source = "Other"
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    # Convert to DataFrame and calculate percentages
+    source_data = [{"source": k, "count": v} for k, v in source_counts.items()]
+    df = pd.DataFrame(source_data)
+
+    # Calculate percentage
+    total = df['count'].sum()
+    df['percentage'] = (df['count'] / total * 100).round(1)
+
+    # Create pie chart
+    chart = alt.Chart(df).mark_arc().encode(
+        theta=alt.Theta(field="count", type="quantitative"),
+        color=alt.Color(
+            field="source",
+            type="nominal",
+            scale=alt.Scale(scheme='category20'),
+            legend=alt.Legend(title="Source")
+        ),
+        tooltip=[
+            alt.Tooltip('source:N', title='Source'),
+            alt.Tooltip('count:Q', title='Papers'),
+            alt.Tooltip('percentage:Q', title='Percentage', format='.1f')
+        ]
+    ).properties(
+        height=300,
+        title='Distribution of Papers by Source'
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_year_distribution(papers: List[Dict[str, Any]]):
+    """Render bar chart showing distribution of papers by publication year."""
+    if not papers:
+        return
+
+    st.markdown("### 📅 Publication Year Distribution")
+
+    # Extract years and bucket them
+    year_counts = {}
+    current_year = 2024
+    for paper in papers:
+        year = paper.get("year", 0)
+
+        if year == 0 or year is None:
+            year_bucket = "Unknown"
+        elif year < 2016:
+            year_bucket = "<2016"
+        else:
+            year_bucket = str(year)
+
+        year_counts[year_bucket] = year_counts.get(year_bucket, 0) + 1
+
+    # Create ordered list of years for past 10 years
+    year_order = [str(y) for y in range(current_year, 2015, -1)] + ["<2016"]
+    if "Unknown" in year_counts:
+        year_order.append("Unknown")
+
+    # Convert to DataFrame
+    year_data = [{"year": k, "count": v} for k, v in year_counts.items()]
+    df = pd.DataFrame(year_data)
+
+    # Sort by year
+    df['year_sort'] = df['year'].apply(
+        lambda x: 0 if x == "Unknown"
+        else 1 if x == "<2016"
+        else int(x)
+    )
+    df = df.sort_values('year_sort', ascending=False)
+
+    # Create bar chart
+    chart = alt.Chart(df).mark_bar(color='#667eea').encode(
+        x=alt.X('year:N', title='Publication Year', sort=year_order),
+        y=alt.Y('count:Q', title='Number of Papers'),
+        tooltip=[
+            alt.Tooltip('year:N', title='Year'),
+            alt.Tooltip('count:Q', title='Papers')
+        ]
+    ).properties(
+        height=300,
+        title='Papers by Publication Year (Past 10 Years)'
+    ).configure_axis(
+        labelFontSize=11,
+        titleFontSize=14
+    ).configure_title(
+        fontSize=16
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 def render_papers_used(papers: List[Dict[str, Any]]):
     """Render the list of papers used in the analysis."""
     st.markdown("### 📚 Papers Analyzed")
@@ -218,6 +327,10 @@ def render_results(data: Dict[str, Any]):
         st.info("**Suggestions:**\n- Try different search terms\n- Use broader keywords\n- Check available topics: quantum simulation, transformers, federated learning, vector databases, drug discovery")
         return
 
+    # Show warning about recent sources if present
+    if data.get("recent_warning"):
+        st.warning(data["recent_warning"])
+
     # Add spacing
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -242,11 +355,88 @@ def render_results(data: Dict[str, Any]):
 
     if data.get("keyword_trend"):
         render_keyword_chart(data["keyword_trend"])
+        st.markdown("<hr style='margin: 30px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+
+    # Render source and year distributions
+    if papers:
+        col1, col2 = st.columns(2)
+        with col1:
+            render_source_distribution(papers)
+        with col2:
+            render_year_distribution(papers)
 
 
 # ============================================================================
 # STYLING
 # ============================================================================
+
+def render_chatbot():
+    """Render the Claude-powered research assistant chatbot."""
+    st.markdown("<hr style='margin: 40px 0; border: 1px solid #333;'>", unsafe_allow_html=True)
+    st.markdown("### 🤖 Claude Research Assistant")
+    st.markdown("*Ask questions about papers, get recommendations, or explore research topics*")
+    st.markdown("*Claude can search the research database to answer your questions*")
+
+    # Initialize chat history in session state
+    if 'claude_chat_history' not in st.session_state:
+        st.session_state.claude_chat_history = []
+
+    # Display chat history
+    for message in st.session_state.claude_chat_history:
+        if isinstance(message, dict) and message.get("role") in ["user", "assistant"]:
+            role = message["role"]
+            content = message.get("content", "")
+
+            # Handle different content types
+            if isinstance(content, str):
+                with st.chat_message(role):
+                    st.markdown(content)
+            elif isinstance(content, list):
+                # Claude API returns list of content blocks
+                with st.chat_message(role):
+                    for block in content:
+                        if hasattr(block, "text"):
+                            st.markdown(block.text)
+                        elif isinstance(block, dict) and block.get("type") == "text":
+                            st.markdown(block.get("text", ""))
+
+    # Chat input
+    if prompt := st.chat_input("Ask about papers, research gaps, or topics..."):
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Get Claude response
+        with st.chat_message("assistant"):
+            with st.spinner("Searching papers and thinking..."):
+                try:
+                    chatbot = get_claude_chatbot()
+
+                    # Chat with Claude, passing conversation history
+                    response = chatbot.chat(
+                        message=prompt,
+                        conversation_history=st.session_state.claude_chat_history
+                    )
+
+                    if response.get("success"):
+                        reply = response.get("response", "I apologize, but I couldn't generate a response.")
+                        st.markdown(reply)
+
+                        # Update conversation history
+                        st.session_state.claude_chat_history = response.get("conversation_history", [])
+                    else:
+                        error_msg = f"I apologize, but I encountered an error: {response.get('response', 'Unknown error')}"
+                        st.error(error_msg)
+                        # Still add to history
+                        st.session_state.claude_chat_history.append({"role": "user", "content": prompt})
+                        st.session_state.claude_chat_history.append({"role": "assistant", "content": error_msg})
+
+                except Exception as e:
+                    error_msg = f"Error: {str(e)}"
+                    st.error(error_msg)
+                    st.session_state.claude_chat_history.append({"role": "user", "content": prompt})
+                    st.session_state.claude_chat_history.append({"role": "assistant", "content": error_msg})
+
 
 def apply_custom_styles():
     """Apply custom CSS styling to the app."""
@@ -256,7 +446,7 @@ def apply_custom_styles():
         .main {
             background-color: #0e1117;
             padding-top: 0 !important;
-            padding-bottom: 80px;
+            padding-bottom: 120px;
         }
 
         /* Page title at top */
@@ -277,7 +467,7 @@ def apply_custom_styles():
             display: flex;
             flex-direction: column;
             min-height: 100vh;
-            padding-bottom: 80px;
+            padding-bottom: 120px;
         }
 
         /* Spacer to push search to center */
@@ -324,6 +514,14 @@ def apply_custom_styles():
         /* Results container */
         .results-container {
             padding-bottom: 40px;
+        }
+
+        /* Chat container */
+        .stChatMessage {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -413,6 +611,9 @@ def main():
         else:
             st.warning("No research gap information found for this topic. Try a broader query.")
         st.markdown('</div>', unsafe_allow_html=True)
+
+        # Chatbot section at bottom - ONLY AFTER SEARCH
+        render_chatbot()
 
     # Fixed footer at bottom
     st.markdown(

@@ -10,6 +10,9 @@ from backend.elastic_client import get_elastic_client
 from backend.chroma_client import get_chroma_client
 from backend.claude_client import get_claude_client
 from backend.arxiv_client import get_arxiv_client
+from backend.semantic_scholar_client import get_semantic_scholar_client
+from backend.pubmed_client import get_pubmed_client
+from backend.crossref_client import get_crossref_client
 from backend.data_ingestion import get_paper_ingestor
 
 # Configure logging
@@ -25,20 +28,25 @@ class QueryHandler:
     replaceable with Fetch.ai agents in the future.
     """
 
-    def __init__(self, fetch_from_arxiv: bool = True):
+    def __init__(self, fetch_from_arxiv: bool = True, min_year: Optional[int] = 2020):
         """
         Initialize query handler with all clients.
 
         Args:
-            fetch_from_arxiv: If True, will fetch papers from arXiv when no local results found
+            fetch_from_arxiv: If True, will fetch papers from external sources when no local results found
+            min_year: Minimum publication year for prioritizing recent papers (default: 2020)
         """
         self.elastic = get_elastic_client()
         self.chroma = get_chroma_client()
         self.claude = get_claude_client()
         self.arxiv = get_arxiv_client()
+        self.semantic_scholar = get_semantic_scholar_client()
+        self.pubmed = get_pubmed_client()
+        self.crossref = get_crossref_client()
         self.ingestor = get_paper_ingestor()
         self.fetch_from_arxiv = fetch_from_arxiv
-        logger.info(f"Initialized QueryHandler (arXiv fetching: {fetch_from_arxiv})")
+        self.min_year = min_year
+        logger.info(f"Initialized QueryHandler (external fetching: {fetch_from_arxiv}, prioritizing papers >= {min_year})")
 
     def query_research_gaps(
         self,
@@ -46,23 +54,29 @@ class QueryHandler:
         n_results: int = 10,
         use_semantic: bool = True,
         use_keyword: bool = True,
-        relevance_threshold: float = 0.7
+        relevance_threshold: float = 0.7,
+        use_two_stage: bool = True
     ) -> Dict[str, Any]:
         """
         Main entry point for querying research gaps.
 
-        This function:
-        1. Retrieves relevant papers using Chroma (semantic) and/or Elastic (keyword)
-        2. Filters by relevance threshold
-        3. Sends results to Claude for analysis
-        4. Returns structured response with gaps and future directions
+        Two-Stage Hybrid Retrieval (when use_two_stage=True):
+        1. Stage 1: Retrieve broad candidate set from Elasticsearch (keyword filtering)
+        2. Stage 2: Re-rank candidates using ChromaDB semantic search
+        3. Return top N semantically relevant papers
+
+        Traditional Retrieval (when use_two_stage=False):
+        1. Retrieve from Chroma (semantic) and/or Elastic (keyword) independently
+        2. Combine and filter by relevance threshold
+        3. Return merged results
 
         Args:
             topic: Research topic query
-            n_results: Number of results to retrieve from each source
+            n_results: Final number of results to return
             use_semantic: Whether to use Chroma semantic search
             use_keyword: Whether to use Elastic keyword search
             relevance_threshold: Minimum similarity score (0-1) for semantic results
+            use_two_stage: Whether to use two-stage hybrid retrieval (recommended for large corpus)
 
         Returns:
             Dictionary containing:
@@ -71,46 +85,82 @@ class QueryHandler:
                 - future_directions: List of future directions
                 - keyword_trend: Keyword frequency data
                 - papers: List of retrieved papers with metadata
+                - retrieval_method: "two_stage" or "traditional"
         """
         try:
             logger.info(f"Processing query: {topic}")
 
-            # 1. Retrieve relevant papers
-            semantic_results = []
-            keyword_results = []
+            # Choose retrieval strategy
+            if use_two_stage and use_semantic and use_keyword:
+                # TWO-STAGE HYBRID RETRIEVAL
+                logger.info("Using two-stage hybrid retrieval (Elasticsearch → ChromaDB)")
+                semantic_results, keyword_results = self._two_stage_retrieval(
+                    topic,
+                    final_k=n_results,
+                    relevance_threshold=relevance_threshold
+                )
+                retrieval_method = "two_stage"
+            else:
+                # TRADITIONAL INDEPENDENT RETRIEVAL
+                logger.info("Using traditional retrieval")
+                semantic_results = []
+                keyword_results = []
 
-            if use_semantic:
-                raw_semantic = self._semantic_retrieval(topic, n_results)
-                # Filter by relevance (distance threshold - lower is better for Chroma)
-                semantic_results = [r for r in raw_semantic if r.get("distance", 1.0) < (1.0 - relevance_threshold)]
-                logger.info(f"Retrieved {len(semantic_results)} relevant results from Chroma (filtered from {len(raw_semantic)})")
+                if use_semantic:
+                    raw_semantic = self._semantic_retrieval(topic, n_results)
+                    # Filter by relevance (distance threshold - lower is better for Chroma)
+                    semantic_results = [r for r in raw_semantic if r.get("distance", 1.0) < (1.0 - relevance_threshold)]
+                    logger.info(f"Retrieved {len(semantic_results)} relevant results from Chroma (filtered from {len(raw_semantic)})")
 
-            if use_keyword:
-                keyword_results = self._keyword_retrieval(topic, n_results)
-                logger.info(f"Retrieved {len(keyword_results)} results from Elastic")
+                if use_keyword:
+                    keyword_results = self._keyword_retrieval(topic, n_results)
+                    logger.info(f"Retrieved {len(keyword_results)} results from Elastic")
 
-            # Check if we have any relevant results
-            if not semantic_results and not keyword_results:
-                logger.warning(f"No relevant results found locally for query: {topic}")
+                retrieval_method = "traditional"
 
-                # Try fetching from arXiv if enabled
+            # Check if we have any relevant results OR if we need more to reach minimum
+            total_found = len(semantic_results) + len(keyword_results)
+            min_required = max(5, n_results)  # At least 5 papers
+
+            if total_found < min_required:
+                logger.warning(f"Found {total_found} papers locally, need at least {min_required}")
+
+                # Try fetching from external sources if enabled
                 if self.fetch_from_arxiv:
-                    logger.info("Attempting to fetch papers from arXiv...")
-                    arxiv_papers = self._fetch_and_ingest_from_arxiv(topic, n_results=min(10, n_results))
+                    needed = min_required - total_found
+                    total_fetched = 0
 
-                    if arxiv_papers > 0:
-                        logger.info(f"Fetched and ingested {arxiv_papers} papers from arXiv. Re-searching...")
+                    # Try multiple sources in priority order, prioritizing recent papers
+                    sources = [
+                        ("arXiv", self._fetch_and_ingest_from_arxiv),
+                        ("Semantic Scholar", self._fetch_and_ingest_from_semantic_scholar),
+                        ("PubMed", self._fetch_and_ingest_from_pubmed),
+                        ("Crossref", self._fetch_and_ingest_from_crossref)
+                    ]
+
+                    for source_name, fetch_func in sources:
+                        if total_fetched >= needed:
+                            break
+
+                        remaining = needed - total_fetched
+                        logger.info(f"Attempting to fetch {remaining} papers from {source_name}...")
+                        fetched = fetch_func(topic, n_results=remaining)
+                        total_fetched += fetched
+                        logger.info(f"Fetched {fetched} papers from {source_name} (total: {total_fetched})")
+
+                    if total_fetched > 0:
+                        logger.info(f"Fetched and ingested {total_fetched} papers from external sources. Re-searching...")
                         # Re-search after ingestion
                         if use_semantic:
                             raw_semantic = self._semantic_retrieval(topic, n_results)
                             semantic_results = [r for r in raw_semantic if r.get("distance", 1.0) < (1.0 - relevance_threshold)]
-                            logger.info(f"Retrieved {len(semantic_results)} relevant results from Chroma after arXiv ingestion")
+                            logger.info(f"Retrieved {len(semantic_results)} relevant results from Chroma after external ingestion")
 
                         if use_keyword:
                             keyword_results = self._keyword_retrieval(topic, n_results)
-                            logger.info(f"Retrieved {len(keyword_results)} results from Elastic after arXiv ingestion")
+                            logger.info(f"Retrieved {len(keyword_results)} results from Elastic after external ingestion")
 
-                # If still no results after arXiv fetch
+                # If still no results after external fetches
                 if not semantic_results and not keyword_results:
                     return self._empty_response(topic, reason="no_relevant_results")
 
@@ -124,6 +174,17 @@ class QueryHandler:
             # 3. Combine results
             papers = self._format_papers(semantic_results, keyword_results)
 
+            # 4. Check recent papers in final results (require at least 5 from after 2016)
+            paper_years = [{"year": p.get("year", 0)} for p in papers]
+            recent_check = self._check_recent_papers_simple(paper_years, min_recent=5, min_year=2017)
+
+            # Add warning if insufficient recent papers
+            if not recent_check["sufficient"]:
+                warning_msg = f"⚠️ Only {recent_check['recent_count']} of {len(papers)} papers are from after 2016. "
+                warning_msg += f"Consider searching for more recent research on this topic."
+                analysis["recent_warning"] = warning_msg
+                logger.warning(warning_msg)
+
             result = {
                 **analysis,
                 "papers": papers,
@@ -132,15 +193,106 @@ class QueryHandler:
                     "keyword_count": len(keyword_results),
                     "total_count": len(semantic_results) + len(keyword_results),
                     "papers_used": len(papers)
-                }
+                },
+                "retrieval_method": retrieval_method
             }
 
-            logger.info(f"Successfully processed query: {topic}")
+            logger.info(f"Successfully processed query: {topic} (method: {retrieval_method})")
             return result
 
         except Exception as e:
             logger.error(f"Error processing query: {e}")
             return self._empty_response(topic, error=str(e))
+
+    def _two_stage_retrieval(
+        self,
+        query: str,
+        final_k: int = 10,
+        stage1_candidates: int = 200,
+        relevance_threshold: float = 0.7
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Perform two-stage hybrid retrieval for large corpus.
+
+        Stage 1: Elasticsearch - Broad keyword-based filtering
+        - Retrieve large candidate set (e.g., 200 papers)
+        - Fast keyword matching on title, abstract, full_text
+        - Filters by recency, relevance, etc.
+
+        Stage 2: ChromaDB - Semantic re-ranking
+        - Take Stage 1 candidates
+        - Re-rank using semantic similarity
+        - Return top K most semantically relevant
+
+        This is much more efficient than semantic search over entire corpus!
+
+        Args:
+            query: Search query
+            final_k: Final number of results to return
+            stage1_candidates: Number of candidates to retrieve in Stage 1
+            relevance_threshold: Minimum similarity for Stage 2
+
+        Returns:
+            Tuple of (semantic_results, keyword_results) for compatibility
+        """
+        logger.info(f"Stage 1: Retrieving {stage1_candidates} candidates from Elasticsearch...")
+
+        # Stage 1: Get broad candidate set from Elasticsearch
+        stage1_results = self._keyword_retrieval(query, n_results=stage1_candidates)
+
+        if not stage1_results:
+            logger.warning("No candidates from Stage 1")
+            return ([], [])
+
+        logger.info(f"Stage 1: Retrieved {len(stage1_results)} candidates")
+
+        # Extract paper IDs from Stage 1
+        candidate_ids = set()
+        for result in stage1_results:
+            paper_id = result.get("metadata", {}).get("paper_id")
+            if not paper_id:
+                # Try to get from result directly
+                paper_id = result.get("paper_id")
+            if paper_id:
+                candidate_ids.add(paper_id)
+
+        logger.info(f"Stage 2: Re-ranking {len(candidate_ids)} papers with ChromaDB...")
+        logger.debug(f"Candidate IDs from Stage 1: {list(candidate_ids)[:5]}...")  # Show first 5
+
+        # Stage 2: Semantic search, but filtered to Stage 1 candidates
+        # Get more results from Chroma, then filter to candidates
+        chroma_results = self._semantic_retrieval(query, n_results=stage1_candidates)
+
+        # Filter to only include Stage 1 candidates
+        # Note: For two-stage retrieval, we relax the threshold since Stage 1 already filtered
+        filtered_results = []
+        matched_ids = 0
+        for result in chroma_results:
+            paper_id = result.get("metadata", {}).get("paper_id")
+            distance = result.get("distance", 1.0)
+
+            if paper_id in candidate_ids:
+                matched_ids += 1
+                # Relaxed threshold for two-stage: accept distance < 0.8 (instead of 0.3)
+                # Stage 1 already filtered, so we just need reasonable semantic similarity
+                if distance < 0.8:
+                    filtered_results.append(result)
+                    logger.debug(f"  Accepted paper {paper_id} with distance {distance:.3f}")
+
+        logger.info(f"Stage 2: Matched {matched_ids} papers in candidate set")
+        logger.info(f"Stage 2: {len(filtered_results)} papers passed relevance filter (distance < 0.8)")
+
+        # Sort by relevance (lower distance = more relevant)
+        filtered_results.sort(key=lambda x: x.get("distance", 1.0))
+
+        # Take top K
+        final_results = filtered_results[:final_k]
+
+        logger.info(f"Stage 2: Returning top {len(final_results)} semantically relevant papers")
+
+        # Return in format expected by main function
+        # semantic_results = Stage 2 output, keyword_results = Stage 1 output (for context)
+        return (final_results, stage1_results[:50])  # Return subset of Stage 1 for context
 
     def _fetch_and_ingest_from_arxiv(
         self,
@@ -177,6 +329,125 @@ class QueryHandler:
 
         except Exception as e:
             logger.error(f"Error fetching from arXiv: {e}")
+            return 0
+
+    def _fetch_and_ingest_from_semantic_scholar(
+        self,
+        query: str,
+        n_results: int = 10
+    ) -> int:
+        """
+        Fetch papers from Semantic Scholar and ingest them into local databases.
+
+        Args:
+            query: Search query
+            n_results: Number of papers to fetch
+
+        Returns:
+            Number of papers successfully ingested
+        """
+        try:
+            logger.info(f"Fetching papers from Semantic Scholar for query: '{query}'")
+
+            # Fetch papers from Semantic Scholar
+            ss_papers = self.semantic_scholar.search_papers(query, max_results=n_results)
+
+            if not ss_papers:
+                logger.warning("No papers found on Semantic Scholar")
+                return 0
+
+            logger.info(f"Found {len(ss_papers)} papers on Semantic Scholar, ingesting...")
+
+            # Ingest papers into Elastic and Chroma (reuse arXiv ingestion - same format)
+            results = self.ingestor.ingest_arxiv_papers(ss_papers)
+
+            logger.info(f"Ingested {results['success']} papers from Semantic Scholar ({results['failed']} failed)")
+            return results['success']
+
+        except Exception as e:
+            logger.error(f"Error fetching from Semantic Scholar: {e}")
+            return 0
+
+    def _fetch_and_ingest_from_pubmed(
+        self,
+        query: str,
+        n_results: int = 10
+    ) -> int:
+        """
+        Fetch papers from PubMed and ingest them into local databases.
+
+        Args:
+            query: Search query
+            n_results: Number of papers to fetch
+
+        Returns:
+            Number of papers successfully ingested
+        """
+        try:
+            logger.info(f"Fetching papers from PubMed for query: '{query}'")
+
+            # Fetch papers from PubMed, prioritizing recent years
+            pubmed_papers = self.pubmed.search_papers(
+                query,
+                max_results=n_results,
+                min_year=self.min_year
+            )
+
+            if not pubmed_papers:
+                logger.warning("No papers found on PubMed")
+                return 0
+
+            logger.info(f"Found {len(pubmed_papers)} papers on PubMed, ingesting...")
+
+            # Ingest papers into Elastic and Chroma
+            results = self.ingestor.ingest_arxiv_papers(pubmed_papers)
+
+            logger.info(f"Ingested {results['success']} papers from PubMed ({results['failed']} failed)")
+            return results['success']
+
+        except Exception as e:
+            logger.error(f"Error fetching from PubMed: {e}")
+            return 0
+
+    def _fetch_and_ingest_from_crossref(
+        self,
+        query: str,
+        n_results: int = 10
+    ) -> int:
+        """
+        Fetch papers from Crossref and ingest them into local databases.
+
+        Args:
+            query: Search query
+            n_results: Number of papers to fetch
+
+        Returns:
+            Number of papers successfully ingested
+        """
+        try:
+            logger.info(f"Fetching papers from Crossref for query: '{query}'")
+
+            # Fetch papers from Crossref, prioritizing recent years
+            crossref_papers = self.crossref.search_papers(
+                query,
+                max_results=n_results,
+                min_year=self.min_year
+            )
+
+            if not crossref_papers:
+                logger.warning("No papers found on Crossref")
+                return 0
+
+            logger.info(f"Found {len(crossref_papers)} papers on Crossref, ingesting...")
+
+            # Ingest papers into Elastic and Chroma
+            results = self.ingestor.ingest_arxiv_papers(crossref_papers)
+
+            logger.info(f"Ingested {results['success']} papers from Crossref ({results['failed']} failed)")
+            return results['success']
+
+        except Exception as e:
+            logger.error(f"Error fetching from Crossref: {e}")
             return 0
 
     def _semantic_retrieval(
@@ -246,6 +517,46 @@ class QueryHandler:
             logger.error(f"Error in keyword retrieval: {e}")
             return []
 
+    def _check_recent_papers_simple(
+        self,
+        papers: List[Dict[str, Any]],
+        min_recent: int = 5,
+        min_year: int = 2017
+    ) -> Dict[str, Any]:
+        """
+        Check if final papers contain enough recent papers.
+
+        Args:
+            papers: List of paper dictionaries with 'year' field
+            min_recent: Minimum number of recent papers required
+            min_year: Year threshold (papers >= this year are "recent")
+
+        Returns:
+            Dictionary with check results
+        """
+        recent_count = 0
+        total_count = 0
+
+        for paper in papers:
+            year = paper.get("year", 0)
+
+            if year and year > 0:
+                total_count += 1
+                if year >= min_year:
+                    recent_count += 1
+
+        sufficient = recent_count >= min_recent
+
+        logger.info(f"Recent papers check (final): {recent_count}/{total_count} from {min_year}+ (need {min_recent})")
+
+        return {
+            "sufficient": sufficient,
+            "recent_count": recent_count,
+            "total_count": total_count,
+            "min_year": min_year,
+            "min_recent": min_recent
+        }
+
     def _format_papers(
         self,
         semantic_results: List[Dict[str, Any]],
@@ -255,8 +566,31 @@ class QueryHandler:
         papers = []
         seen_titles = set()
 
-        # Process semantic results
-        for result in semantic_results[:10]:  # Show more papers
+        # Helper function to determine paper source
+        def get_paper_source(metadata):
+            venue = metadata.get("venue", "").lower()
+            url = metadata.get("url", "").lower()
+
+            # Determine source based on venue or URL
+            if "arxiv" in venue or "arxiv.org" in url:
+                return "arXiv"
+            elif "pubmed" in venue or "pubmed.ncbi.nlm.nih.gov" in url:
+                return "PubMed"
+            elif "crossref" in venue or "doi.org" in url:
+                return "Crossref"
+            elif "semantic scholar" in venue or "semanticscholar" in url:
+                return "Semantic Scholar"
+            elif any(journal in venue for journal in ["ieee", "acm", "springer", "nature", "science", "elsevier"]):
+                return metadata.get("venue", "Journal")
+            elif any(conf in venue for conf in ["cvpr", "iclr", "neurips", "icml", "aaai", "acl"]):
+                return metadata.get("venue", "Conference")
+            elif venue and venue != "":
+                return metadata.get("venue", "Other")
+            else:
+                return "Other"
+
+        # Process semantic results (process more to account for duplicates)
+        for result in semantic_results[:20]:
             metadata = result.get("metadata", {})
             title = metadata.get("title", "Unknown")
 
@@ -270,27 +604,38 @@ class QueryHandler:
                     "section": metadata.get("section_name", ""),
                     "relevance_score": 1.0 - result.get("distance", 0),  # Convert distance to similarity
                     "content_preview": result.get("content", "")[:300] + "...",
-                    "source": "semantic"
+                    "source": get_paper_source(metadata),
+                    "retrieval_method": "semantic"
                 })
                 seen_titles.add(title)
 
-        # Process keyword results
-        for result in keyword_results[:10]:
-            title = result.get("title", "Unknown")
+                # Stop if we have enough papers
+                if len(papers) >= 10:
+                    break
 
-            if title not in seen_titles and title != "Unknown":
-                metadata = result.get("metadata", {})
-                papers.append({
-                    "title": title,
-                    "authors": metadata.get("authors", "Unknown Authors"),
-                    "year": metadata.get("year", "N/A"),
-                    "venue": metadata.get("venue", ""),
-                    "field": metadata.get("field", ""),
-                    "relevance_score": result.get("score", 0) / 10.0,  # Normalize Elastic score
-                    "content_preview": result.get("content", "")[:300] + "...",
-                    "source": "keyword"
-                })
-                seen_titles.add(title)
+        # Process keyword results (only if we need more papers)
+        if len(papers) < 10:
+            for result in keyword_results[:20]:
+                title = result.get("title", "Unknown")
+
+                if title not in seen_titles and title != "Unknown":
+                    metadata = result.get("metadata", {})
+                    papers.append({
+                        "title": title,
+                        "authors": metadata.get("authors", "Unknown Authors"),
+                        "year": metadata.get("year", "N/A"),
+                        "venue": metadata.get("venue", ""),
+                        "field": metadata.get("field", ""),
+                        "relevance_score": result.get("score", 0) / 10.0,  # Normalize Elastic score
+                        "content_preview": result.get("content", "")[:300] + "...",
+                        "source": get_paper_source(metadata),
+                        "retrieval_method": "keyword"
+                    })
+                    seen_titles.add(title)
+
+                    # Stop if we have enough papers
+                    if len(papers) >= 10:
+                        break
 
         return papers
 
